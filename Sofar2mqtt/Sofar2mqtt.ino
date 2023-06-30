@@ -1,17 +1,26 @@
 // Update these to match your inverter/network.
-#define INVERTER_ME3000				// Uncomment for ME3000
-//#define INVERTER_HYBRID			// Uncomment for Hybrid
+//#define INVERTER_ME3000				// Uncomment for ME3000
+#define INVERTER_HYBRID			// Uncomment for Hybrid
 
 // The device name is used as the MQTT base topic. If you need more than one Sofar2mqtt on your network, give them unique names.
 const char* deviceName = "Sofar2mqtt";
 const char* version = "v2.1.1";
 
-#define WIFI_SSID	"xxxxx"
-#define WIFI_PASSWORD	"xxxxx"
-#define MQTT_SERVER	"mqtt"
+#define WIFI_SSID	"WIFI"
+#define WIFI_PASSWORD	"PASSWORD"
+#define MQTT_SERVER	"MQTT"
 #define MQTT_PORT	1883
-#define MQTT_USERNAME	"auser"			// Empty string for none.
-#define MQTT_PASSWORD	"apassword"
+#define MQTT_USERNAME	"USER"			// Empty string for none.
+#define MQTT_PASSWORD	"PASSWORD"
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x64
+#define STATUS_LED_BUILTIN 23
+#define RELAY_BUILTIN 16
+
+
 
 /*****
 Sofar2mqtt is a remote control interface for Sofar solar and battery inverters.
@@ -55,6 +64,7 @@ Sofar2mqtt/set/standby   - send value "true"
 Sofar2mqtt/set/auto   - send value "true" or "battery_save"
 Sofar2mqtt/set/charge   - send values in the range 0-3000 (watts)
 Sofar2mqtt/set/discharge   - send values in the range 0-3000 (watts)
+Sofar2mqtt/set/relay   - send values in the range 0-1 0 = low, 1= high
 
 Each of the above will return a response on:
 Sofar2mqtt/response/<function>, the message containing the response from
@@ -99,7 +109,7 @@ calcCRC by angelo.compagnucci@gmail.com and jpmzometa@gmail.com
 
 #define RS485_TRIES 8       // x 50mS to wait for RS485 input chars.
 // Wifi parameters.
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 const char* wifiName = WIFI_SSID;
 WiFiClient wifi;
 
@@ -111,11 +121,11 @@ PubSubClient mqtt(wifi);
 // SoftwareSerial is used to create a second serial port, which will be deidcated to RS485.
 // The built-in serial port remains available for flashing and debugging.
 #include <SoftwareSerial.h>
-#define SERIAL_COMMUNICATION_CONTROL_PIN D5 // Transmission set pin
+#define SERIAL_COMMUNICATION_CONTROL_PIN 25 // Transmission set pin
 #define RS485_TX HIGH
 #define RS485_RX LOW
-#define RXPin        D6  // Serial Receive pin
-#define TXPin        D7  // Serial Transmit pin
+#define RXPin        26  // Serial Receive pin
+#define TXPin        27  // Serial Transmit pin
 SoftwareSerial RS485Serial(RXPin, TXPin);
 
 // Sofar run states
@@ -244,9 +254,8 @@ struct modbusResponse
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#define OLED_RESET 0  // GPIO0
-Adafruit_SSD1306 display(OLED_RESET);
+#include <Adafruit_SH110X.h>
+Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 /**
  * Check to see if the elapsed interval has passed since the passed in
@@ -282,7 +291,7 @@ void updateOLED(String line1, String line2, String line3, String line4)
 {
 	display.clearDisplay();
 	display.setTextSize(1);
-	display.setTextColor(WHITE);
+	display.setTextColor(SH110X_WHITE);
 	display.setCursor(0,0);
 
 	if(line1 != "NULL")
@@ -436,8 +445,15 @@ void mqttCallback(String topic, byte *message, unsigned int length)
 			fnCode = SOFAR_FN_CHARGE;
 		else if(cmd == "discharge")
 			fnCode = SOFAR_FN_DISCHARGE;
-	}
+	} else if(cmd == "relay" && (messageValue == 0 || messageValue == 1 )) 
+	{
+    if (messageValue == 0) {
+      digitalWrite(RELAY_BUILTIN, LOW);
+    } else {
+      digitalWrite(RELAY_BUILTIN, HIGH);
+    }
 
+	}
 	if(fnCode)
 	{
 		BATTERYSAVE = false;
@@ -513,13 +529,19 @@ void mqttReconnect()
 			chargeMode += "/set/charge";
 			String dischargeMode(deviceName);
 			dischargeMode += "/set/discharge";
+      String relayMode(deviceName);
+      relayMode += "/set/relay";
+
 
 			// Subscribe or resubscribe to topics.
 			if(
 				mqtt.subscribe(const_cast<char*>(standbyMode.c_str())) &&
 				mqtt.subscribe(const_cast<char*>(autoMode.c_str())) &&
 				mqtt.subscribe(const_cast<char*>(chargeMode.c_str())) &&
-				mqtt.subscribe(const_cast<char*>(dischargeMode.c_str())))
+				mqtt.subscribe(const_cast<char*>(dischargeMode.c_str())) &&
+        mqtt.subscribe(const_cast<char*>(relayMode.c_str()))
+				
+				)
 			{
 				updateOLED("NULL", "NULL", "NULL", "");
 				break;
@@ -741,9 +763,9 @@ void heartbeat()
 		}
 
 		//Flash the LED
-		digitalWrite(LED_BUILTIN, LOW);
+		digitalWrite(STATUS_LED_BUILTIN, LOW);
 		delay(4);
-		digitalWrite(LED_BUILTIN, HIGH);
+		digitalWrite(STATUS_LED_BUILTIN, HIGH);
 	}
 }
 
@@ -848,8 +870,10 @@ unsigned int batteryWatts()
 
 void setup()
 {
-	Serial.begin(9600);
-	pinMode(LED_BUILTIN, OUTPUT);
+	Serial.begin(115200);
+	pinMode(STATUS_LED_BUILTIN, OUTPUT);
+
+  pinMode(RELAY_BUILTIN, OUTPUT);
 
 	pinMode(SERIAL_COMMUNICATION_CONTROL_PIN, OUTPUT);
 	digitalWrite(SERIAL_COMMUNICATION_CONTROL_PIN, RS485_RX);
@@ -858,7 +882,8 @@ void setup()
 	delay(500);
 
 	//Turn on the OLED
-	display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize OLED with the I2C addr 0x3C (for the 64x48)
+  display.begin(SCREEN_ADDRESS, true); // Address 0x3C default
+
 	display.clearDisplay();
 	display.display();
 	updateOLED(deviceName, "connecting", "", version);
